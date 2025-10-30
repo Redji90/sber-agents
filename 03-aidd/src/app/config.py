@@ -16,7 +16,7 @@ if not OPENROUTER_API_KEY:
 
 # Необязательные переменные окружения с дефолтными значениями
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistralai/mistral-7b-instruct:free")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-5-codex")
 SYSTEM_ROLE = os.getenv("SYSTEM_ROLE", "банковский ассистент")
 CONTEXT_TURNS = int(os.getenv("CONTEXT_TURNS", "8"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
