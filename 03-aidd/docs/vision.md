@@ -8,7 +8,7 @@
 - Сборка/утилиты: `make` (задачи: установка, запуск бота, формат/линт)
 - Telegram Bot API: `aiogram` 3.x, режим `polling`
 - LLM-клиент: `openai` (Python) с `base_url=https://openrouter.ai/api/v1`
-- Модель по умолчанию: `mistralai/mistral-7b-instruct:free` (через OpenRouter)
+- Модель по умолчанию: `gpt-5-codex` (через OpenRouter)
 - Логирование: стандартный `logging` (уровень `INFO`)
 - Контекст диалога: в памяти процесса (последние N реплик), без БД на MVP
 
@@ -50,7 +50,7 @@
 - `TELEGRAM_BOT_TOKEN`
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `LLM_MODEL=mistralai/mistral-7b-instruct:free`
+- `LLM_MODEL=gpt-5-codex`
 - `SYSTEM_ROLE=банковский ассистент`
 - `CONTEXT_TURNS=8`
 - `LOG_LEVEL=INFO`
@@ -176,7 +176,7 @@
 - Валидация при импорте модуля: проверка обязательных переменных, выброс исключения с понятным сообщением, если чего-то не хватает
 - Значения по умолчанию:
   - `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-  - `LLM_MODEL=mistralai/mistral-7b-instruct:free`
+  - `LLM_MODEL=gpt-5-codex`
   - `SYSTEM_ROLE=банковский ассистент`
   - `CONTEXT_TURNS=8`
   - `LOG_LEVEL=INFO`

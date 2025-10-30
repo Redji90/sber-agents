@@ -36,7 +36,7 @@
 
 4. [x] Интеграция LLM через OpenRouter
    - Цель: Получать ответ от модели.
-   - Шаги: `src/app/llm/client.py` с `generate(...)`; модель `mistralai/mistral-7b-instruct:free`.
+   - Шаги: `src/app/llm/client.py` с `generate(...)`; модель `gpt-5-codex`.
    - Тест: На текстовое сообщение бот отвечает сгенерированным ответом.
 
 5. [x] Память сессии (in-memory, последние N)
