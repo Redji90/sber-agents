@@ -1,0 +1,23 @@
+telegram:
+  bot_token: "8572233383:AAE57pt1NEJCIyB7pEtZHwoZBLmvwsxYx7A"  # Заполнить в .env или через переменную окружения
+
+llm:
+  provider: "ollama"
+  model: "llama3.2:1b"  # или qwen2.5:7b-instruct (обе установлены на сервере)
+  api_key: ""  # не требуется для Ollama
+  base_url: "http://195.209.210.171:11434/v1/"
+
+vlm:
+  provider: "ollama"
+  model: "llava:latest"  # или llava:13b, bakllava:latest, qwen2-vl:7b
+  api_key: ""  # не требуется для Ollama
+  base_url: "http://195.209.210.171:11434/v1/"
+
+speech:
+  provider: "vosk"
+  model_path: "C:/vosk/vosk-model-small-ru-0.22"  # Путь к распакованной модели (используйте прямые слэши /)
+  language: "ru"
+
+storage:
+  type: "json"
+  path: "data/transactions.json"
