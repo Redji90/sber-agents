@@ -1,6 +1,8 @@
 # src/app/bot/main.py
 import asyncio
 import logging
+import os
+from threading import Thread
 from aiogram import Bot, Dispatcher
 
 from src.app.bot.handlers import router
@@ -9,10 +11,45 @@ from src.app.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
+
+def run_http_server(port: int = 8000) -> None:
+    """Запускает простой HTTP сервер для Render Web Service health check."""
+    try:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        
+        class HealthCheckHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/" or self.path == "/health":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def log_message(self, format, *args):
+                # Отключаем логирование HTTP запросов
+                pass
+        
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logger.info(f"HTTP сервер запущен на порту {port} для Render health check")
+        server.serve_forever()
+    except Exception as e:
+        logger.warning(f"Не удалось запустить HTTP сервер: {e}")
+
+
 async def main() -> None:
     # Настройка логирования
     setup_logging()
     logger.info("Запуск Telegram-бота...")
+
+    # Запуск HTTP сервера в отдельном потоке (для Render Web Service)
+    # Render ожидает, что Web Service слушает на порту из переменной окружения PORT
+    port = int(os.getenv("PORT", 8000))
+    http_thread = Thread(target=run_http_server, args=(port,), daemon=True)
+    http_thread.start()
+    logger.info(f"HTTP сервер запущен в фоновом потоке на порту {port}")
 
     # Инициализация бота и диспетчера
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
