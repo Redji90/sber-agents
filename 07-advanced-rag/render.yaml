@@ -1,0 +1,50 @@
+# Конфигурация для деплоя на Render.com
+# Документация: https://render.com/docs/yaml-spec
+
+services:
+  - type: web
+    name: telegram-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      # Эти переменные нужно будет установить вручную в панели Render
+      # или через Render Dashboard -> Environment Variables
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # Не синхронизировать из Git, устанавливать вручную
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_MODEL
+        value: llama-3.1-8b-instant
+      - key: LLM_PROVIDER
+        value: openai
+      - key: SYSTEM_ROLE
+        value: банковский ассистент
+      - key: EMBEDDINGS_PROVIDER
+        value: huggingface
+      - key: EMBEDDINGS_MODEL
+        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      - key: RAGAS_EMBEDDINGS_PROVIDER
+        value: huggingface
+      - key: RAGAS_EMBEDDING_MODEL
+        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      - key: HUGGINGFACE_DEVICE
+        value: cpu
+      - key: HUGGINGFACE_NORMALIZE_EMBEDDINGS
+        value: "true"
+      - key: CONTEXT_TURNS
+        value: "8"
+      - key: RETRIEVER_K
+        value: "4"
+      - key: DATA_PATH
+        value: "@data"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: SHOW_SOURCES
+        value: "false"
+    healthCheckPath: /
+    # Render автоматически перезапускает сервис при сбоях
+    autoDeploy: true
+

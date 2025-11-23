@@ -1,0 +1,25 @@
+# Игнорируем ненужные файлы при сборке Docker образа
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.git/
+.gitignore
+.env
+*.md
+docs/
+screenshots/
+reports/
+datasets/
+*.txt
+*.ps1
+Makefile
+uv.lock
+
