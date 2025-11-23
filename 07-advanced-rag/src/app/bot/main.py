@@ -12,44 +12,44 @@ from src.app.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def run_http_server(port: int = 8000) -> None:
-    """Запускает простой HTTP сервер для Render Web Service health check."""
-    try:
-        from http.server import HTTPServer, BaseHTTPRequestHandler
+def start_http_server(port: int = 8000) -> Thread:
+    """Запускает простой HTTP сервер для Render Web Service health check в отдельном потоке."""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import socket
+    
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/" or self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_response(404)
+                self.end_headers()
         
-        class HealthCheckHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == "/" or self.path == "/health":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-            
-            def log_message(self, format, *args):
-                # Отключаем логирование HTTP запросов
-                pass
-        
-        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-        logger.info(f"HTTP сервер запущен на порту {port} для Render health check")
-        server.serve_forever()
-    except Exception as e:
-        logger.warning(f"Не удалось запустить HTTP сервер: {e}")
+        def log_message(self, format, *args):
+            # Отключаем логирование HTTP запросов
+            pass
+    
+    def run_server():
+        try:
+            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            logger.info(f"HTTP сервер запущен на порту {port} для Render health check")
+            server.serve_forever()
+        except Exception as e:
+            logger.error(f"Ошибка HTTP сервера: {e}")
+            raise
+    
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    return thread
 
 
 async def main() -> None:
-    # Настройка логирования
-    setup_logging()
+    # Логирование уже настроено в if __name__ == "__main__"
     logger.info("Запуск Telegram-бота...")
-
-    # Запуск HTTP сервера в отдельном потоке (для Render Web Service)
-    # Render ожидает, что Web Service слушает на порту из переменной окружения PORT
-    port = int(os.getenv("PORT", 8000))
-    http_thread = Thread(target=run_http_server, args=(port,), daemon=True)
-    http_thread.start()
-    logger.info(f"HTTP сервер запущен в фоновом потоке на порту {port}")
 
     # Инициализация бота и диспетчера
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
@@ -96,6 +96,33 @@ async def main() -> None:
         logger.info("Telegram-бот остановлен.")
 
 if __name__ == "__main__":
+    # Настройка логирования ДО запуска сервера
+    setup_logging()
+    
+    # Запуск HTTP сервера СИНХРОННО перед запуском бота
+    # Это гарантирует, что порт будет открыт до того, как Render проверит его
+    port = int(os.getenv("PORT", 8000))
+    logger.info(f"Запуск HTTP сервера на порту {port} для Render health check...")
+    http_thread = start_http_server(port)
+    
+    # Даем серверу время запуститься и привязаться к порту
+    import time
+    time.sleep(3)  # Увеличиваем задержку для гарантии
+    
+    # Проверяем, что сервер запустился
+    try:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('127.0.0.1', port))
+        sock.close()
+        if result == 0:
+            logger.info(f"✓ HTTP сервер успешно запущен и слушает порт {port}")
+        else:
+            logger.warning(f"⚠ HTTP сервер может быть не готов на порту {port}")
+    except Exception as e:
+        logger.warning(f"Не удалось проверить порт {port}: {e}")
+    
+    # Теперь запускаем бота
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

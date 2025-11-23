@@ -14,8 +14,9 @@ WORKDIR /app
 COPY pyproject.toml ./
 
 # Установка зависимостей через pip (проще для деплоя)
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir \
+# Используем --root-user-action=ignore чтобы убрать предупреждение о root пользователе
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel --root-user-action=ignore && \
+    pip install --no-cache-dir --root-user-action=ignore \
     aiogram>=3.0.0 \
     openai>=1.0.0 \
     python-dotenv>=1.0.0 \
