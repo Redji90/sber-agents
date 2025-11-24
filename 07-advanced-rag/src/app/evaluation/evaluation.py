@@ -61,7 +61,9 @@ def _get_ragas_embeddings():
         # RAGAS может требовать метод embed_text, которого нет у HuggingFaceEmbeddings
         # Используем embeddings из ragas напрямую для совместимости
         try:
+            logger.info("Попытка импорта RAGAS HuggingFaceEmbeddings...")
             from ragas.embeddings import HuggingFaceEmbeddings as RAGASHuggingFaceEmbeddings
+            logger.info("✅ RAGAS HuggingFaceEmbeddings успешно импортирован")
 
             # Настраиваем кэш для RAGAS embeddings ПЕРЕД импортом модели
             if config.HUGGINGFACE_CACHE_FOLDER:
@@ -98,14 +100,66 @@ def _get_ragas_embeddings():
 
             # Используем локальный путь, если модель найдена в кэше
             model_path = local_model_path if local_model_path else model_name
-            embeddings = RAGASHuggingFaceEmbeddings(
-                model=model_path,
-            )
-            logger.info("Используются RAGAS HuggingFace embeddings: %s", model_path)
-            return embeddings
-        except ImportError:
+            logger.info("Инициализация RAGAS HuggingFaceEmbeddings с моделью: %s", model_path)
+            try:
+                base_ragas_embeddings = RAGASHuggingFaceEmbeddings(
+                    model=model_path,
+                )
+                # RAGAS HuggingFaceEmbeddings использует embed_text/embed_texts,
+                # но RAGAS метрики ожидают embed_query/embed_documents
+                # Создаем обертку для совместимости
+                from langchain_core.embeddings import Embeddings
+                
+                class RAGASCompatibleWrapper(Embeddings):
+                    """Обертка для RAGAS HuggingFaceEmbeddings с методами embed_query/embed_documents."""
+                    def __init__(self, base_ragas_embeddings):
+                        self._base = base_ragas_embeddings
+                    
+                    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                        # RAGAS использует embed_texts для списка текстов
+                        return self._base.embed_texts(texts)
+                    
+                    def embed_query(self, text: str) -> list[float]:
+                        # RAGAS использует embed_text для одного текста
+                        return self._base.embed_text(text)
+                    
+                    def embed_text(self, text: str) -> list[float]:
+                        # Прямой доступ к методу RAGAS для совместимости
+                        return self._base.embed_text(text)
+                    
+                    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+                        # Прямой доступ к методу RAGAS для совместимости
+                        return self._base.embed_texts(texts)
+                    
+                    async def aembed_text(self, text: str) -> list[float]:
+                        # Async версия для совместимости
+                        if hasattr(self._base, 'aembed_text'):
+                            return await self._base.aembed_text(text)
+                        # Fallback на синхронный метод
+                        return self._base.embed_text(text)
+                    
+                    async def aembed_texts(self, texts: list[str]) -> list[list[float]]:
+                        # Async версия для совместимости
+                        if hasattr(self._base, 'aembed_texts'):
+                            return await self._base.aembed_texts(texts)
+                        # Fallback на синхронный метод
+                        return self._base.embed_texts(texts)
+                
+                embeddings = RAGASCompatibleWrapper(base_ragas_embeddings)
+                logger.info("✅ RAGAS HuggingFace embeddings успешно инициализированы с оберткой: %s", model_path)
+                return embeddings
+            except Exception as init_exc:
+                logger.warning(
+                    "Ошибка при инициализации RAGAS HuggingFaceEmbeddings: %s. "
+                    "Переход на fallback с оберткой.",
+                    init_exc
+                )
+                raise  # Пробрасываем дальше, чтобы попасть в except ImportError
+        except (ImportError, Exception) as e:
+            logger.warning("Не удалось использовать RAGAS HuggingFaceEmbeddings: %s. Используем fallback.", e)
             # Fallback на langchain-huggingface, если ragas.embeddings недоступен
             from langchain_huggingface import HuggingFaceEmbeddings
+            from langchain_core.embeddings import Embeddings
 
             model_kwargs = {"device": config.HUGGINGFACE_DEVICE}
             encode_kwargs = {"normalize_embeddings": config.HUGGINGFACE_NORMALIZE_EMBEDDINGS}
@@ -119,9 +173,24 @@ def _get_ragas_embeddings():
             if config.HUGGINGFACE_CACHE_FOLDER:
                 kwargs["cache_folder"] = config.HUGGINGFACE_CACHE_FOLDER
 
-            embeddings = HuggingFaceEmbeddings(**kwargs)
+            base_embeddings = HuggingFaceEmbeddings(**kwargs)
+            
+            # Создаем обертку для совместимости с RAGAS (добавляем embed_query)
+            class RAGASCompatibleEmbeddings(Embeddings):
+                """Обертка для langchain HuggingFaceEmbeddings с поддержкой embed_query для RAGAS."""
+                def __init__(self, base_embeddings: HuggingFaceEmbeddings):
+                    self._base = base_embeddings
+                
+                def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                    return self._base.embed_documents(texts)
+                
+                def embed_query(self, text: str) -> list[float]:
+                    # langchain HuggingFaceEmbeddings использует embed_documents для одного текста
+                    return self._base.embed_documents([text])[0]
+            
+            embeddings = RAGASCompatibleEmbeddings(base_embeddings)
             logger.warning(
-                "Используются langchain HuggingFace embeddings (может быть несовместимо с RAGAS): %s",
+                "Используются langchain HuggingFace embeddings с оберткой для RAGAS: %s",
                 config.RAGAS_EMBEDDING_MODEL
             )
             return embeddings
@@ -150,37 +219,87 @@ def _get_ragas_llm():
 
         # Отключаем retry в OpenAI клиенте для RAGAS, чтобы при 429 ошибке сразу делать длинную паузу
         # RAGAS сам обрабатывает ошибки, и быстрые retry только усугубляют ситуацию при rate limiting
+        # Используем отдельные настройки для RAGAS, если они указаны (позволяет использовать другой провайдер)
         return ChatOpenAI(
             model=model,
             temperature=0.2,
-            api_key=config.OPENAI_API_KEY,
-            base_url=config.OPENAI_BASE_URL,
+            api_key=config.RAGAS_OPENAI_API_KEY,
+            base_url=config.RAGAS_OPENAI_BASE_URL,
             max_retries=0,  # Отключаем retry - RAGAS сам обработает ошибки
             timeout=60.0,  # Разумный таймаут
         )
 
 
 def _load_dataset_from_langsmith(dataset_name: str) -> Dataset | None:
-    """Загружает датасет из LangSmith."""
+    """Загружает датасет из LangSmith с обработкой ошибок подключения."""
     if not config.LANGSMITH_API_KEY:
         logger.warning("LANGSMITH_API_KEY не установлен. Невозможно загрузить датасет из LangSmith.")
         return None
 
     try:
         from langsmith import Client
+        import time
 
         client = Client(api_key=config.LANGSMITH_API_KEY)
 
-        # Проверяем существование датасета
-        try:
-            dataset_info = client.read_dataset(dataset_name=dataset_name)
-            logger.info("Найден датасет '%s' в LangSmith", dataset_name)
-        except Exception as exc:
-            logger.error("Датасет '%s' не найден в LangSmith: %s", dataset_name, exc)
-            return None
+        # Проверяем существование датасета с повторными попытками
+        max_retries = 3
+        retry_delay = 2.0
+        
+        for attempt in range(max_retries):
+            try:
+                dataset_info = client.read_dataset(dataset_name=dataset_name)
+                logger.info("Найден датасет '%s' в LangSmith", dataset_name)
+                break
+            except Exception as exc:
+                error_str = str(exc).lower()
+                is_connection_error = any(keyword in error_str for keyword in [
+                    "connection", "timeout", "read timed out", "langsmithconnectionerror"
+                ])
+                
+                if is_connection_error and attempt < max_retries - 1:
+                    logger.warning(
+                        "Ошибка подключения к LangSmith при проверке датасета (попытка %s/%s): %s. "
+                        "Повторная попытка через %s секунд...",
+                        attempt + 1,
+                        max_retries,
+                        exc,
+                        retry_delay
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                else:
+                    logger.error("Датасет '%s' не найден в LangSmith: %s", dataset_name, exc)
+                    return None
 
-        # Загружаем примеры из датасета
-        examples = list(client.list_examples(dataset_name=dataset_name))
+        # Загружаем примеры из датасета с повторными попытками
+        retry_delay = 2.0
+        for attempt in range(max_retries):
+            try:
+                examples = list(client.list_examples(dataset_name=dataset_name))
+                break
+            except Exception as exc:
+                error_str = str(exc).lower()
+                is_connection_error = any(keyword in error_str for keyword in [
+                    "connection", "timeout", "read timed out", "langsmithconnectionerror"
+                ])
+                
+                if is_connection_error and attempt < max_retries - 1:
+                    logger.warning(
+                        "Ошибка подключения к LangSmith при загрузке примеров (попытка %s/%s): %s. "
+                        "Повторная попытка через %s секунд...",
+                        attempt + 1,
+                        max_retries,
+                        exc,
+                        retry_delay
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                else:
+                    logger.error("Не удалось загрузить примеры из датасета '%s': %s", dataset_name, exc)
+                    return None
 
         if not examples:
             logger.warning("Датасет '%s' пуст", dataset_name)
@@ -374,18 +493,43 @@ def _run_rag_on_dataset(dataset: Dataset, retriever: BaseRetriever) -> Dataset:
         avg_contexts_count
     )
     
+    # Критическое предупреждение, если слишком много пустых ответов
+    if empty_answers > len(answers) * 0.5:
+        logger.error(
+            "⚠️ КРИТИЧНО: Более 50%% ответов пустые (%s/%s). "
+            "Метрики RAGAS не будут вычисляться корректно. "
+            "Проверьте: 1) Работает ли LLM API, 2) Правильно ли настроен retriever, "
+            "3) Есть ли данные в векторном хранилище.",
+            empty_answers,
+            len(answers)
+        )
+    
+    if empty_contexts > len(contexts_list) * 0.5:
+        logger.error(
+            "⚠️ КРИТИЧНО: Более 50%% контекстов пустые (%s/%s). "
+            "Метрики context_recall и context_precision не будут вычисляться корректно. "
+            "Проверьте: 1) Работает ли retriever, 2) Есть ли данные в векторном хранилище.",
+            empty_contexts,
+            len(contexts_list)
+        )
+    
     # Логируем первые несколько примеров для диагностики
     if len(dataset) > 0:
-        logger.debug("Пример данных после RAG (первые 3 записи):")
+        logger.info("Пример данных после RAG (первые 3 записи):")
         for i in range(min(3, len(dataset))):
             example = dataset[i]
-            logger.debug(
-                "  Пример %s: question='%s...', answer_len=%s, contexts_count=%s",
+            answer = example.get("answer", "")
+            contexts = example.get("contexts", [])
+            logger.info(
+                "  Пример %s: question='%s...', answer='%s...', answer_len=%s, contexts_count=%s",
                 i + 1,
                 example.get("question", "")[:50],
-                len(example.get("answer", "")),
-                len(example.get("contexts", []))
+                answer[:100] if answer else "(пусто)",
+                len(answer),
+                len(contexts)
             )
+            if contexts:
+                logger.info("    Первый контекст: '%s...'", contexts[0][:100] if contexts[0] else "(пусто)")
     
     return dataset
 
@@ -447,26 +591,158 @@ def evaluate_rag_pipeline(
             ContextPrecision(llm=llm),
         ]
 
+    # Проверяем валидность данных перед вычислением метрик
+    non_empty_answers = sum(1 for a in dataset_with_rag["answer"] if a and a.strip())
+    non_empty_contexts = sum(1 for ctx_list in dataset_with_rag["contexts"] 
+                             if ctx_list and any(c and c.strip() for c in ctx_list))
+    
+    logger.info("Проверка данных перед вычислением метрик: "
+                "непустых ответов=%s/%s, непустых контекстов=%s/%s",
+                non_empty_answers, len(dataset_with_rag),
+                non_empty_contexts, len(dataset_with_rag))
+    
+    if non_empty_answers == 0:
+        logger.error("⚠️ Все ответы пустые! RAGAS не сможет вычислить метрики. "
+                    "Проверьте работу RAG pipeline и LLM API.")
+        # Возвращаем нулевые метрики вместо пустого словаря
+        return {
+            "faithfulness": 0.0,
+            "answer_relevancy": 0.0,
+            "answer_correctness": 0.0,
+            "answer_similarity": 0.0,
+            "context_recall": 0.0,
+            "context_precision": 0.0,
+        }
+    
+    logger.info("Инициализация RAGAS компонентов...")
+    logger.info("RAGAS LLM модель: %s (провайдер: %s, base_url: %s)", 
+                config.RAGAS_LLM_MODEL or config.LLM_MODEL, 
+                config.LLM_PROVIDER,
+                config.RAGAS_OPENAI_BASE_URL)
+    if config.RAGAS_OPENAI_BASE_URL != config.OPENAI_BASE_URL:
+        logger.info("⚠️ RAGAS использует отдельный провайдер: %s (основной бот: %s)", 
+                    config.RAGAS_OPENAI_BASE_URL, config.OPENAI_BASE_URL)
+    logger.info("RAGAS Embeddings провайдер: %s, модель: %s", 
+                config.RAGAS_EMBEDDINGS_PROVIDER, 
+                config.RAGAS_EMBEDDING_MODEL)
+    
+    # Проверяем подключение к RAGAS LLM перед запуском evaluation
+    logger.info("Проверка подключения к RAGAS LLM...")
+    try:
+        test_response = llm.invoke("Тест")
+        logger.info("✅ Подключение к RAGAS LLM успешно: %s", test_response.content[:50] if hasattr(test_response, 'content') else str(test_response)[:50])
+    except Exception as e:
+        logger.error("❌ Ошибка подключения к RAGAS LLM: %s", e)
+        logger.error("Проверьте настройки:")
+        logger.error("  RAGAS_OPENAI_BASE_URL: %s", config.RAGAS_OPENAI_BASE_URL)
+        logger.error("  RAGAS_LLM_MODEL: %s", config.RAGAS_LLM_MODEL or config.LLM_MODEL)
+        logger.error("  RAGAS_OPENAI_API_KEY: %s...", config.RAGAS_OPENAI_API_KEY[:10] if config.RAGAS_OPENAI_API_KEY else "не установлен")
+        raise ValueError(f"Не удалось подключиться к RAGAS LLM: {e}") from e
+    
     logger.info("Вычисление RAGAS метрик...")
-    result = evaluate(dataset=dataset_with_rag, metrics=metrics)
+    # Используем RunConfig для обработки ошибок подключения
+    from ragas import RunConfig
+    
+    # Вычисляем метрики с обработкой ошибок
+    try:
+        # Пробуем использовать RunConfig с max_workers для ограничения параллельности
+        try:
+            run_config = RunConfig(max_workers=1)
+            logger.info("Используется RunConfig(max_workers=1) для ограничения параллельности")
+            result = evaluate(dataset=dataset_with_rag, metrics=metrics, run_config=run_config)
+        except TypeError:
+            # Если RunConfig не поддерживает параметры, запускаем без него
+            logger.warning("RunConfig не поддерживает указанные параметры, запускаем без него")
+            result = evaluate(dataset=dataset_with_rag, metrics=metrics)
+    except Exception as e:
+        logger.error("❌ Ошибка при вычислении RAGAS метрик: %s", e)
+        logger.error("Тип ошибки: %s", type(e).__name__)
+        import traceback
+        logger.error("Traceback:\n%s", traceback.format_exc())
+        # Возвращаем частичные результаты, если возможно
+        raise
+
+    # Диагностика: проверяем структуру результата RAGAS
+    logger.info("=== Диагностика результата RAGAS ===")
+    logger.info("Тип result: %s", type(result).__name__)
+    logger.info("Атрибуты result: %s", [attr for attr in dir(result) if not attr.startswith('_')][:20])
+    
+    # Проверяем result.scores
+    if hasattr(result, 'scores'):
+        logger.info("result.scores существует, тип: %s", type(result.scores).__name__)
+        if isinstance(result.scores, list) and len(result.scores) > 0:
+            logger.info("result.scores - список из %s элементов", len(result.scores))
+            logger.info("Первый элемент scores: %s", result.scores[0] if result.scores else "пусто")
+            
+            # Подсчитываем количество nan для каждой метрики
+            import math
+            import numpy as np
+            metric_attrs = ['faithfulness', 'answer_relevancy', 'answer_correctness', 
+                           'answer_similarity', 'context_recall', 'context_precision']
+            for metric_name in metric_attrs:
+                nan_count = 0
+                valid_count = 0
+                for score_dict in result.scores:
+                    if isinstance(score_dict, dict) and metric_name in score_dict:
+                        val = score_dict[metric_name]
+                        if val is not None:
+                            try:
+                                val_float = float(val)
+                                if math.isnan(val_float) or (isinstance(val, (float, np.number)) and np.isnan(val)):
+                                    nan_count += 1
+                                else:
+                                    valid_count += 1
+                            except (ValueError, TypeError):
+                                nan_count += 1
+                if nan_count > 0 or valid_count > 0:
+                    logger.info("  Метрика %s: %s валидных значений, %s nan значений", 
+                               metric_name, valid_count, nan_count)
+        elif hasattr(result.scores, 'keys'):
+            logger.info("result.scores - словарь с ключами: %s", list(result.scores.keys())[:10])
+    
+    # Проверяем прямые атрибуты метрик
+    metric_attrs = ['faithfulness', 'answer_relevancy', 'answer_correctness', 
+                     'answer_similarity', 'context_recall', 'context_precision']
+    for attr in metric_attrs:
+        if hasattr(result, attr):
+            value = getattr(result, attr)
+            logger.info("result.%s = %s (тип: %s)", attr, value, type(value).__name__)
+        else:
+            logger.info("result.%s - атрибут отсутствует", attr)
 
     # Извлекаем средние значения метрик
     # RAGAS может возвращать метрики как списки или скалярные значения
     def _extract_metric_value(metric_result):
         """Извлекает числовое значение из результата метрики."""
+        import math
+        import numpy as np
+        
         if metric_result is None:
             return 0.0
         if isinstance(metric_result, (list, tuple)):
             # Если список, берем среднее значение
             if len(metric_result) == 0:
                 return 0.0
-            # Фильтруем None значения и строки
-            valid_values = [v for v in metric_result if v is not None and isinstance(v, (int, float))]
+            # Фильтруем None, nan, inf значения и строки
+            valid_values = [
+                v for v in metric_result 
+                if v is not None 
+                and isinstance(v, (int, float, np.number))
+                and not math.isnan(float(v))
+                and not math.isinf(float(v))
+            ]
             if len(valid_values) == 0:
+                # Логируем, если все значения невалидны
+                nan_count = sum(1 for v in metric_result if isinstance(v, (int, float, np.number)) and math.isnan(float(v)))
+                if nan_count > 0:
+                    logger.debug("Все значения метрики невалидны (nan/inf/None): %s nan из %s", nan_count, len(metric_result))
                 return 0.0
-            return float(sum(valid_values) / len(valid_values))
-        elif isinstance(metric_result, (int, float)):
-            return float(metric_result)
+            return float(sum(float(v) for v in valid_values) / len(valid_values))
+        elif isinstance(metric_result, (int, float, np.number)):
+            value = float(metric_result)
+            if math.isnan(value) or math.isinf(value):
+                return 0.0
+            return value
         elif isinstance(metric_result, str):
             try:
                 return float(metric_result)
@@ -477,23 +753,55 @@ def evaluate_rag_pipeline(
             logger.warning("Неожиданный тип результата метрики: %s (тип: %s)", metric_result, type(metric_result))
             return 0.0
 
-    # RAGAS возвращает EvaluationResult объект, а не словарь
-    # Обращаемся к атрибутам напрямую или через getattr
+    # RAGAS возвращает EvaluationResult объект
+    # Метрики могут быть в атрибутах result или в result.scores (список словарей)
+    def _get_metric_from_result(result, metric_name: str):
+        """Извлекает метрику из результата RAGAS, проверяя разные источники."""
+        # Сначала пробуем прямой атрибут
+        if hasattr(result, metric_name):
+            value = getattr(result, metric_name)
+            if value is not None:
+                logger.debug("Метрика %s найдена в атрибуте result.%s: %s", metric_name, metric_name, value)
+                return value
+        
+        # Затем пробуем result.scores (может быть список словарей или словарь)
+        if hasattr(result, 'scores'):
+            if isinstance(result.scores, list) and len(result.scores) > 0:
+                # Если scores - список словарей, извлекаем значения для всех примеров
+                values = []
+                for score_dict in result.scores:
+                    if isinstance(score_dict, dict) and metric_name in score_dict:
+                        val = score_dict[metric_name]
+                        if val is not None:
+                            values.append(val)
+                if values:
+                    logger.debug("Метрика %s найдена в result.scores (список): %s значений", metric_name, len(values))
+                    return values  # Возвращаем список для обработки в _extract_metric_value
+            elif hasattr(result.scores, 'get'):
+                # Если scores - словарь
+                value = result.scores.get(metric_name)
+                if value is not None:
+                    logger.debug("Метрика %s найдена в result.scores (словарь): %s", metric_name, value)
+                    return value
+        
+        logger.warning("Метрика %s не найдена в result", metric_name)
+        return None
+    
     # В быстром режиме вычисляем только основные метрики
     if config.EVALUATION_FAST_MODE:
         metrics_dict = {
-            "faithfulness": _extract_metric_value(getattr(result, "faithfulness", None)),
-            "answer_relevancy": _extract_metric_value(getattr(result, "answer_relevancy", None)),
-            "answer_similarity": _extract_metric_value(getattr(result, "answer_similarity", None)),
+            "faithfulness": _extract_metric_value(_get_metric_from_result(result, "faithfulness")),
+            "answer_relevancy": _extract_metric_value(_get_metric_from_result(result, "answer_relevancy")),
+            "answer_similarity": _extract_metric_value(_get_metric_from_result(result, "answer_similarity")),
         }
     else:
         metrics_dict = {
-            "faithfulness": _extract_metric_value(getattr(result, "faithfulness", None)),
-            "answer_relevancy": _extract_metric_value(getattr(result, "answer_relevancy", None)),
-            "answer_correctness": _extract_metric_value(getattr(result, "answer_correctness", None)),
-            "answer_similarity": _extract_metric_value(getattr(result, "answer_similarity", None)),
-            "context_recall": _extract_metric_value(getattr(result, "context_recall", None)),
-            "context_precision": _extract_metric_value(getattr(result, "context_precision", None)),
+            "faithfulness": _extract_metric_value(_get_metric_from_result(result, "faithfulness")),
+            "answer_relevancy": _extract_metric_value(_get_metric_from_result(result, "answer_relevancy")),
+            "answer_correctness": _extract_metric_value(_get_metric_from_result(result, "answer_correctness")),
+            "answer_similarity": _extract_metric_value(_get_metric_from_result(result, "answer_similarity")),
+            "context_recall": _extract_metric_value(_get_metric_from_result(result, "context_recall")),
+            "context_precision": _extract_metric_value(_get_metric_from_result(result, "context_precision")),
         }
 
     logger.info("Evaluation завершён. Метрики: %s", metrics_dict)

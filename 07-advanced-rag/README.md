@@ -147,6 +147,25 @@ HUGGINGFACE_NORMALIZE_EMBEDDINGS=true  # Нормализация эмбедди
 HUGGINGFACE_CACHE_FOLDER=  # Папка для кэширования моделей (опционально)
 ```
 
+### 6. Groq (облачный провайдер без VPN)
+
+Подробная инструкция: `docs/groq-setup.md`.
+
+```env
+# Пример настроек для Groq
+LLM_PROVIDER=openai
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=llama-3.1-8b-instant
+OPENAI_API_KEY=your_groq_api_key_here
+RAGAS_LLM_MODEL=llama-3.1-8b-instant
+```
+
+Проверить ключ можно скриптом:
+
+```bash
+uv run python scripts/test_groq.py
+```
+
 Подробнее см. `.env.example` или `env.example`.
 
 ## Деплой на облачный сервис

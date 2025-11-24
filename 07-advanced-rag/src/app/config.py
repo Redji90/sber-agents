@@ -81,6 +81,32 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.fireworks.ai/inferen
 # - accounts/fireworks/models/llama-v3-8b-instruct
 # Для GigaChat используйте: GigaChat
 LLM_MODEL = os.getenv("LLM_MODEL", "accounts/fireworks/models/llama-3.1-8b-instruct")
+
+# Автокоррекция модели для Groq (если используется Groq API)
+if "groq.com" in OPENAI_BASE_URL:
+    # Groq не поддерживает модель llama-3.1-8b-versatile
+    # Исправляем на правильную модель Groq
+    if "llama-3.1-8b-versatile" in LLM_MODEL:
+        logger.warning(
+            "Модель 'llama-3.1-8b-versatile' не существует в Groq. "
+            "Автоматически заменяем на 'openai/gpt-oss-20b'."
+        )
+        LLM_MODEL = "openai/gpt-oss-20b"
+    elif LLM_MODEL == "accounts/fireworks/models/llama-3.1-8b-instruct":
+        # Если используется дефолтная модель Fireworks, но base_url указывает на Groq
+        logger.info(
+            "Обнаружен Groq API, но используется модель Fireworks. "
+            "Автоматически заменяем на 'openai/gpt-oss-20b'."
+        )
+        LLM_MODEL = "openai/gpt-oss-20b"
+    # Поддержка короткого имени модели (gpt-oss-20 -> gpt-oss-20b)
+    elif LLM_MODEL in ["openai/gpt-oss-20", "gpt-oss-20"]:
+        logger.info(
+            "Обнаружено короткое имя модели '%s'. "
+            "Автоматически заменяем на 'openai/gpt-oss-20b'.",
+            LLM_MODEL
+        )
+        LLM_MODEL = "openai/gpt-oss-20b"
 # Провайдер LLM: openai (OpenAI-совместимый API) или gigachat (GigaChat от Сбера)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
 SYSTEM_ROLE = os.getenv("SYSTEM_ROLE", "банковский ассистент")
@@ -99,6 +125,11 @@ LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT") or os.getenv("LANGCHAIN_PROJE
 # Модель LLM для RAGAS (если не указана или пустая, используется LLM_MODEL)
 _ragas_llm_model = os.getenv("RAGAS_LLM_MODEL")
 RAGAS_LLM_MODEL = _ragas_llm_model if _ragas_llm_model else LLM_MODEL
+# Отдельный base_url для RAGAS (если не указан, используется OPENAI_BASE_URL)
+# Полезно для использования другого провайдера для evaluation (например, LLMost вместо Groq)
+RAGAS_OPENAI_BASE_URL = os.getenv("RAGAS_OPENAI_BASE_URL") or OPENAI_BASE_URL
+# Отдельный API key для RAGAS (если не указан, используется OPENAI_API_KEY)
+RAGAS_OPENAI_API_KEY = os.getenv("RAGAS_OPENAI_API_KEY") or OPENAI_API_KEY
 # По умолчанию используем huggingface для RAGAS (лучшая совместимость)
 RAGAS_EMBEDDINGS_PROVIDER = os.getenv("RAGAS_EMBEDDINGS_PROVIDER", "huggingface")
 # Провайдер эмбеддингов для основной системы (openai/huggingface/ollama)
@@ -150,11 +181,24 @@ HUGGINGFACE_NORMALIZE_EMBEDDINGS = _get_bool_env("HUGGINGFACE_NORMALIZE_EMBEDDIN
 
 # Настройки для evaluation (параллельная обработка)
 # Количество одновременных запросов при evaluation (больше = быстрее, но больше нагрузка на API)
-# Уменьшено до 1 для Groq (лимит 6000 TPM, строгие rate limits), можно увеличить до 2-5 для других провайдеров
 EVALUATION_MAX_CONCURRENT = int(os.getenv("EVALUATION_MAX_CONCURRENT", "1"))
 # Задержка между запросами в секундах (для избежания rate limits)
-# По умолчанию 2.0 секунд. Для OpenRouter с бесплатными моделями рекомендуется 5.0-10.0 секунд
 EVALUATION_DELAY_BETWEEN_REQUESTS = float(os.getenv("EVALUATION_DELAY_BETWEEN_REQUESTS", "2.0"))
+# Усиленные ограничения для Groq (6000 TPM, строгие лимиты даже на on_demand tier)
+if "groq.com" in OPENAI_BASE_URL:
+    if EVALUATION_MAX_CONCURRENT > 1:
+        logger.warning(
+            "Groq имеет строгие rate limits (TPM=6000). "
+            "EVALUATION_MAX_CONCURRENT понижен с %s до 1.",
+            EVALUATION_MAX_CONCURRENT,
+        )
+        EVALUATION_MAX_CONCURRENT = 1
+    if EVALUATION_DELAY_BETWEEN_REQUESTS < 3.0:
+        logger.warning(
+            "Groq требует большую задержку между запросами во время evaluation. "
+            "EVALUATION_DELAY_BETWEEN_REQUESTS увеличен до 3.0 секунд."
+        )
+        EVALUATION_DELAY_BETWEEN_REQUESTS = 3.0
 # Максимальное количество примеров для обработки (0 = без ограничений, для тестирования можно ограничить)
 EVALUATION_MAX_EXAMPLES = int(os.getenv("EVALUATION_MAX_EXAMPLES", "0"))
 # Оптимизация RAGAS: использовать только основные метрики для ускорения (true/false)
